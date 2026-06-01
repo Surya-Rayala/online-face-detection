@@ -32,10 +32,10 @@ dependencies = [
 
 [project.optional-dependencies]
 # The default runtime. Install this unless you are on Jetson (use JetPack wheels there).
-torch = ["torch>=2.1", "torchvision>=0.16"]
+# Default runtime. Includes retinaface-pytorch so the `ternaus_resnet50` weight works out of the box.
+torch = ["torch>=2.1", "torchvision>=0.16", "retinaface-pytorch>=0.0.7"]
 onnx = ["onnxruntime>=1.16", "onnx>=1.15", "onnxsim>=0.4.33"]
 trt = ["tensorrt>=8.6"]
-ternaus = ["retinaface-pytorch>=0.0.7", "torch>=2.1", "torchvision>=0.16"]
 # Host the model over HTTP (uniform contract). Adds no torch beyond the runtime extra.
 serve = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
 # Talk to a remote service. Torch-free: numpy/opencv (core) + requests only.
