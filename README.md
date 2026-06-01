@@ -210,34 +210,26 @@ uv add "online-face-detection[torch]"            # into a uv project
 uv pip install "online-face-detection[torch]"    # into the active venv
 ```
 
-**Jetson (JetPack).** On Jetson the GPU stack — CUDA, cuDNN, **TensorRT** — comes from **JetPack**,
-and `torch` / `onnxruntime-gpu` must be **NVIDIA's Jetson-specific wheels matched to your JetPack
-version**. The PyPI `[torch]`/`[onnx]` wheels are x86_64 and won't use the Tegra GPU, so don't
-`pip install` them. Steps:
+**Jetson (JetPack).** Use **JetPack 6.x** on Orin boards — it provides CUDA 12.6, TensorRT 10.3, and a
+PyTorch 2.6 wheel, well above this package's `torch>=2.1` floor (older boards: **JetPack 5.1.x**,
+which ships torch ~2.1). On Jetson the GPU stack (CUDA/cuDNN/TensorRT) comes from JetPack, so **don't
+`pip install` torch/onnxruntime** — the PyPI wheels are x86_64 and won't use the Tegra GPU. Install
+NVIDIA's Jetson wheels for your JetPack (NVIDIA's "PyTorch for Jetson" / the
+[jetson-ai-lab](https://pypi.jetson-ai-lab.dev) index), then install this package **without a runtime
+extra** so it uses the system ones: `pip install online-face-detection`. It adapts to whatever JetPack
+provides and keys each cached TensorRT engine to the exact board.
 
-1. Find your JetPack (it pins CUDA + cuDNN + TensorRT):
-   `cat /etc/nv_tegra_release` · `dpkg -l | grep nvidia-jetpack`.
-2. Install NVIDIA's `torch` + `onnxruntime-gpu` wheels **built for that JetPack** (NVIDIA's
-   "PyTorch for Jetson" post / Jetson Zoo). TensorRT is already installed system-wide by JetPack.
-3. Install this package **without a runtime extra**, so it uses the system ones:
-   `pip install online-face-detection` (no `[torch]`/`[onnx]`).
-4. Verify the stack:
-   `python -c "import torch, tensorrt; print(torch.__version__, torch.cuda.is_available(), tensorrt.__version__)"`.
+> **Conflicting model requirements?** One Jetson has a single system torch/TRT. If two models need
+> incompatible torch/CUDA, run each as its own [HTTP service](#optional-serve-it-as-an-http-service)
+> (e.g. an `nvcr.io/nvidia/l4t-pytorch` container) and compose them by URL with the `[client]` proxy.
 
-The package adapts to whatever JetPack provides — it requires only `torch>=2.1`, imports torch/TRT
-lazily, and keys each cached TensorRT engine to the exact GPU + JetPack, so an engine never loads on
-the wrong board.
-
-> **Multiple models with conflicting needs?** One Jetson has a *single* system torch/TRT, so
-> mutually-compatible models share it in one process. If two models need *incompatible* torch/CUDA,
-> don't force them together — run each as its own [HTTP service](#optional-serve-it-as-an-http-service)
-> (e.g. in a matched `nvcr.io/nvidia/l4t-pytorch` container) and compose them by URL with the
-> `[client]` proxy. That's the main reason the serve/client split exists.
-
-**Pre-build an artifact** (optional — otherwise built on first use):
+**Pre-build & cache an artifact** (optional — otherwise built on first use). Choose the runtime you'll
+deploy with for the target device:
 ```bash
-online-face-export --model retinaface --weights mobilenet0.25 --runtime onnx --device auto
+online-face-export --model retinaface --weights mobilenet0.25 --runtime trt --device auto
 ```
+Flags: `--model` · `--weights KEY|PATH` · `--runtime {torchscript,onnx,trt}` ·
+`--device {auto,cpu,cuda,mps}` · `--precision {auto,fp32,fp16,int8}` · `--input-size N`.
 
 ## License
 
