@@ -204,7 +204,9 @@ Compose two services into a pipeline (e.g. face → emotion) by URL — see
 
 ## Misc
 
-**Install with uv** instead of pip:
+### Install with uv
+
+Same as pip, with `uv`:
 ```bash
 uv add "online-face-detection[torch]"            # into a uv project
 uv pip install "online-face-detection[torch]"    # into the active venv
@@ -224,8 +226,10 @@ must be NVIDIA's Jetson wheels — the PyPI `[torch]`/`[onnx]` wheels are x86_64
 
 Both are above this package's `torch>=2.1` floor.
 
-**2. Install these into the JetPack env first** (NVIDIA's "PyTorch for Jetson" post / the
-[jetson-ai-lab](https://pypi.jetson-ai-lab.dev) index, matched to your JetPack):
+**2. Install these into the JetPack env first** — from NVIDIA's
+[PyTorch for Jetson](https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048) guide, or the
+[jetson-ai-lab](https://pypi.jetson-ai-lab.io) wheel index matched to your JetPack (e.g.
+`--index-url https://pypi.jetson-ai-lab.io/jp6/cu126` for JetPack 6.x):
 
 - `torch`, `torchvision` — the **Jetson GPU wheels** (not from PyPI)
 - `onnxruntime-gpu` — only if you'll use the ONNX backend
@@ -244,8 +248,9 @@ It adapts to whatever JetPack provides and keys each cached TensorRT engine to t
 > incompatible torch/CUDA, run each as its own [HTTP service](#optional-serve-it-as-an-http-service)
 > (e.g. an `nvcr.io/nvidia/l4t-pytorch` container) and compose them by URL with the `[client]` proxy.
 
-**Pre-build & cache an artifact** (optional — otherwise built on first use). Choose the runtime you'll
-deploy with for the target device:
+### Pre-build & cache an artifact
+
+Optional — otherwise built on first use. Choose the runtime you'll deploy with for the target device:
 ```bash
 online-face-export --model retinaface --weights mobilenet0.25 --runtime trt --device auto
 ```
