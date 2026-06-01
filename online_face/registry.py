@@ -41,11 +41,13 @@ _BIUBUG6: Dict[str, dict] = {
     "resnet50": {
         "arch": "resnet50",
         "filename": "retinaface_resnet50.pth",
-        "sha256": None,
-        "url": None,  # no stable, arch-matched mirror -> manual placement
+        "sha256": "6d1de9c2944f2ccddca5f5e010ea5ae64a39845a86311af6fdf30841b0a5a16d",
+        # Official biubug6 weights via Google Drive's direct-download endpoint (auto-downloads).
+        "url": ("https://drive.usercontent.google.com/download"
+                "?id=14KX6VqF69MdSPk3Tr9PlDYbq7ArpdNUW&export=download&confirm=t"),
         "manual": (
-            "Download 'Resnet50_Final.pth' from biubug6/Pytorch_Retinaface "
-            "(https://github.com/biubug6/Pytorch_Retinaface — Google Drive link in the README)."
+            "If Google Drive rate-limits the auto-download, get 'Resnet50_Final.pth' from "
+            "biubug6/Pytorch_Retinaface (https://github.com/biubug6/Pytorch_Retinaface)."
         ),
         "input_size": 840,
         "exportable": True,

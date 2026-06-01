@@ -109,8 +109,8 @@ class RetinaFaceFamily(ModelFamily):
             from retinaface.pre_trained_models import get_model
         except Exception as e:  # pragma: no cover
             raise RuntimeUnavailableError(
-                "ternaus weights need the 'retinaface-pytorch' package: "
-                "pip install 'online-face-detection[ternaus]'"
+                "ternaus weights need the 'retinaface-pytorch' package (included in the [torch] extra): "
+                "pip install 'online-face-detection[torch]'"
             ) from e
         variant = resolved.meta.get("variant", "resnet50_2020-07-20")
         dev = "cpu" if str(device).startswith("mps") else device  # ternaus pipeline is unreliable on MPS

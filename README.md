@@ -98,13 +98,25 @@ a known key (auto-downloaded) or a file path. `weights=None` uses the default.
 | weights key | impl | exportable | notes |
 |-------------|------|------------|-------|
 | `mobilenet0.25` *(default)* | biubug6 | onnx / trt | light, edge-friendly; auto-downloads (~1.7 MB) |
-| `resnet50` | biubug6 | onnx / trt | higher accuracy; weights placed manually |
+| `resnet50` | biubug6 | onnx / trt | higher accuracy; auto-downloads (~109 MB, sha256-checked) |
 | `ternaus_resnet50` | ternaus | torch-only | a convenience weight; works out of the box |
 
 ```python
-FaceDetector("retinaface", weights="resnet50")
+FaceDetector("retinaface", weights="mobilenet0.25")                            # default, auto-downloads
 FaceDetector("retinaface", weights="/models/retinaface.onnx", runtime="onnx")  # a ready artifact
 ```
+
+**`resnet50` is auto-downloaded** (~109 MB, sha256-verified) from the official biubug6 mirror on
+first use — nothing to do. If Google Drive ever rate-limits you, download `Resnet50_Final.pth` from
+[biubug6/Pytorch_Retinaface](https://github.com/biubug6/Pytorch_Retinaface) and pass the path:
+
+```python
+FaceDetector("retinaface", weights="/path/to/Resnet50_Final.pth")     # or --weights on the CLI/serve
+```
+
+…or drop it at `~/.cache/online_inference/weights/retinaface_resnet50.pth` and use `weights="resnet50"`.
+(Keep `resnet`/`r50` in the filename — the arch is inferred from the name. The same applies to any
+custom weight file.)
 
 ---
 
@@ -198,8 +210,29 @@ uv add "online-face-detection[torch]"            # into a uv project
 uv pip install "online-face-detection[torch]"    # into the active venv
 ```
 
-**Jetson:** install torch / onnxruntime-gpu / tensorrt from the JetPack/NVIDIA wheels (don't
-`pip install` them), then `pip install online-face-detection` (without `[torch]`).
+**Jetson (JetPack).** On Jetson the GPU stack — CUDA, cuDNN, **TensorRT** — comes from **JetPack**,
+and `torch` / `onnxruntime-gpu` must be **NVIDIA's Jetson-specific wheels matched to your JetPack
+version**. The PyPI `[torch]`/`[onnx]` wheels are x86_64 and won't use the Tegra GPU, so don't
+`pip install` them. Steps:
+
+1. Find your JetPack (it pins CUDA + cuDNN + TensorRT):
+   `cat /etc/nv_tegra_release` · `dpkg -l | grep nvidia-jetpack`.
+2. Install NVIDIA's `torch` + `onnxruntime-gpu` wheels **built for that JetPack** (NVIDIA's
+   "PyTorch for Jetson" post / Jetson Zoo). TensorRT is already installed system-wide by JetPack.
+3. Install this package **without a runtime extra**, so it uses the system ones:
+   `pip install online-face-detection` (no `[torch]`/`[onnx]`).
+4. Verify the stack:
+   `python -c "import torch, tensorrt; print(torch.__version__, torch.cuda.is_available(), tensorrt.__version__)"`.
+
+The package adapts to whatever JetPack provides — it requires only `torch>=2.1`, imports torch/TRT
+lazily, and keys each cached TensorRT engine to the exact GPU + JetPack, so an engine never loads on
+the wrong board.
+
+> **Multiple models with conflicting needs?** One Jetson has a *single* system torch/TRT, so
+> mutually-compatible models share it in one process. If two models need *incompatible* torch/CUDA,
+> don't force them together — run each as its own [HTTP service](#optional-serve-it-as-an-http-service)
+> (e.g. in a matched `nvcr.io/nvidia/l4t-pytorch` container) and compose them by URL with the
+> `[client]` proxy. That's the main reason the serve/client split exists.
 
 **Pre-build an artifact** (optional — otherwise built on first use):
 ```bash
