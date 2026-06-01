@@ -31,8 +31,14 @@ can add anytime — see [Install options](#install-options). (Prefer `uv`? See [
 ```python
 from online_face import FaceDetector
 
-det = FaceDetector("retinaface", device="auto")   # auto -> CUDA / MPS / CPU; weights auto-download
-res = det(frame)
+det = FaceDetector(
+    "retinaface",       # model family (the only one today)
+    device="auto",      # "auto" (CUDA > MPS > CPU) | "cpu" | "cuda" | "mps"
+    runtime="auto",     # "auto" | "torch" | "torchscript" | "onnx" | "trt"
+    conf=0.5,           # detection confidence threshold
+    nms=0.4,            # NMS IoU threshold
+)
+res = det(frame)        # weights auto-download on first use; see "Input" below
 
 res.boxes        # (N, 4) xyxy, in original-frame coordinates
 res.scores       # (N,)
@@ -63,15 +69,24 @@ gives rolling fps / latency / per-stage timings.
 ### Or from the terminal
 
 ```bash
-online-face --source video.mp4 --display               # window with boxes/landmarks + FPS (q/ESC quits)
-online-face --source 0 --stream --display              # webcam
-online-face --source video.mp4 --save-video out.mp4    # headless: write an annotated mp4
+# detect on a video file and show a window (boxes + landmarks + FPS; press q/ESC to quit)
+online-face --source video.mp4 --device auto --runtime auto --conf 0.5 --nms 0.4 --display
+
+# webcam (index 0) as a live stream
+online-face --source 0 --device auto --runtime auto --stream --display
+
+# headless: write an annotated mp4 instead of showing a window
+online-face --source video.mp4 --device auto --runtime auto --save-video out.mp4
+
+# discover weights, or see every flag
 online-face --list-weights
+online-face --help
 ```
 
-`online-face` == `python -m online_face.cli.run`. Useful flags:
-`--runtime {auto,torch,torchscript,onnx,trt}` · `--device {auto,cpu,cuda,mps}` ·
-`--conf` · `--nms` · `--max-frames`.
+`online-face` == `python -m online_face.cli.run`. All flags:
+`--source` (file path | webcam index | rtsp/http url) · `--device {auto,cpu,cuda,mps}` ·
+`--runtime {auto,torch,torchscript,onnx,trt}` · `--conf` · `--nms` · `--stream` · `--display` ·
+`--save-video PATH` · `--max-frames N` · `--list-weights`.
 
 ---
 
@@ -84,7 +99,7 @@ a known key (auto-downloaded) or a file path. `weights=None` uses the default.
 |-------------|------|------------|-------|
 | `mobilenet0.25` *(default)* | biubug6 | onnx / trt | light, edge-friendly; auto-downloads (~1.7 MB) |
 | `resnet50` | biubug6 | onnx / trt | higher accuracy; weights placed manually |
-| `ternaus_resnet50` | ternaus | torch-only | works out of the box (bundled with `[torch]`) |
+| `ternaus_resnet50` | ternaus | torch-only | a convenience weight; works out of the box |
 
 ```python
 FaceDetector("retinaface", weights="resnet50")
@@ -127,7 +142,7 @@ and be called by URL. Needs the `[serve]` extra (adds only fastapi/uvicorn on to
 
 ```bash
 pip install "online-face-detection[serve]"
-online-face-serve --runtime torch --device mps --port 8001
+online-face-serve --model retinaface --device auto --runtime auto --host 127.0.0.1 --port 8001
 ```
 
 | Route | What it does |
@@ -170,7 +185,7 @@ uv pip install "online-face-detection[torch]"    # into the active venv
 
 **Pre-build an artifact** (optional — otherwise built on first use):
 ```bash
-online-face-export --model retinaface --runtime onnx
+online-face-export --model retinaface --weights mobilenet0.25 --runtime onnx --device auto
 ```
 
 ## License
