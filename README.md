@@ -108,7 +108,7 @@ FaceDetector("retinaface", weights="/models/retinaface.onnx", runtime="onnx")  #
 
 **`resnet50` is auto-downloaded** (~109 MB, sha256-verified) from the official biubug6 mirror on
 first use — nothing to do. If Google Drive ever rate-limits you, download `Resnet50_Final.pth` from
-[biubug6/Pytorch_Retinaface](https://github.com/biubug6/Pytorch_Retinaface) and pass the path:
+[biubug6/Pytorch_Retinaface](https://drive.google.com/file/d/14KX6VqF69MdSPk3Tr9PlDYbq7ArpdNUW/view) and pass the path:
 
 ```python
 FaceDetector("retinaface", weights="/path/to/Resnet50_Final.pth")     # or --weights on the CLI/serve
