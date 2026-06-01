@@ -48,9 +48,9 @@ online-face-export = "online_face.cli.export:main"
 online-face-serve = "online_face.serve:main"
 
 [project.urls]
-Homepage = "https://github.com/suryachand2k1/online-face-detection"
-Repository = "https://github.com/suryachand2k1/online-face-detection"
-Issues = "https://github.com/suryachand2k1/online-face-detection/issues"
+Homepage = "https://github.com/Surya-Rayala/online-face-detection"
+Repository = "https://github.com/Surya-Rayala/online-face-detection"
+Issues = "https://github.com/Surya-Rayala/online-face-detection/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["online_face"]
