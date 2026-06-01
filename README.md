@@ -210,14 +210,35 @@ uv add "online-face-detection[torch]"            # into a uv project
 uv pip install "online-face-detection[torch]"    # into the active venv
 ```
 
-**Jetson (JetPack).** Use **JetPack 6.x** on Orin boards — it provides CUDA 12.6, TensorRT 10.3, and a
-PyTorch 2.6 wheel, well above this package's `torch>=2.1` floor (older boards: **JetPack 5.1.x**,
-which ships torch ~2.1). On Jetson the GPU stack (CUDA/cuDNN/TensorRT) comes from JetPack, so **don't
-`pip install` torch/onnxruntime** — the PyPI wheels are x86_64 and won't use the Tegra GPU. Install
-NVIDIA's Jetson wheels for your JetPack (NVIDIA's "PyTorch for Jetson" / the
-[jetson-ai-lab](https://pypi.jetson-ai-lab.dev) index), then install this package **without a runtime
-extra** so it uses the system ones: `pip install online-face-detection`. It adapts to whatever JetPack
-provides and keys each cached TensorRT engine to the exact board.
+### Jetson (JetPack)
+
+On Jetson the whole GPU stack (CUDA / cuDNN / TensorRT) is part of **JetPack**, and torch/onnxruntime
+must be NVIDIA's Jetson wheels — the PyPI `[torch]`/`[onnx]` wheels are x86_64 and won't use the GPU.
+
+**1. Pick a JetPack version.**
+
+| Board | JetPack | Stack |
+|-------|---------|-------|
+| Orin (AGX/NX/Nano) | **6.x** | CUDA 12.6 · TensorRT 10.3 · PyTorch 2.6 wheel |
+| Xavier / older | **5.1.x** | torch ~2.1 |
+
+Both are above this package's `torch>=2.1` floor.
+
+**2. Install these into the JetPack env first** (NVIDIA's "PyTorch for Jetson" post / the
+[jetson-ai-lab](https://pypi.jetson-ai-lab.dev) index, matched to your JetPack):
+
+- `torch`, `torchvision` — the **Jetson GPU wheels** (not from PyPI)
+- `onnxruntime-gpu` — only if you'll use the ONNX backend
+- `opencv-python`, `numpy` — usually already present in JetPack; install if missing
+- TensorRT — **already installed by JetPack** (nothing to do)
+
+**3. Then install this package with NO runtime extra**, so it uses the system ones:
+
+```bash
+pip install online-face-detection      # no [torch] / [onnx]
+```
+
+It adapts to whatever JetPack provides and keys each cached TensorRT engine to the exact board.
 
 > **Conflicting model requirements?** One Jetson has a single system torch/TRT. If two models need
 > incompatible torch/CUDA, run each as its own [HTTP service](#optional-serve-it-as-an-http-service)
