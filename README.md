@@ -133,6 +133,13 @@ adds those packages (it won't reinstall torch). You can also install several at 
 | `[serve]` | fastapi, uvicorn | host the model as an HTTP service (below) |
 | `[client]` | requests | call a remote service (torch-free, below) |
 
+**Which do I actually need?**
+- `pip install online-face-detection` (no `[...]`) → **core only** (numpy/opencv); **no runtime, can't run inference**. Use this only when torch is provided another way (e.g. Jetson/JetPack wheels).
+- `[torch]` → the **foundation**; required to run the model locally (CPU/CUDA/MPS). Start here.
+- `[onnx]` / `[trt]` → **add** a backend *on top of* torch (they don't replace it). Install together: `pip install "online-face-detection[torch,onnx]"`.
+- `[serve]` → runs the model in-process, so it needs torch too: `pip install "online-face-detection[torch,serve]"`.
+- `[client]` → the **only torch-free** one — it just calls a remote service, so `pip install "online-face-detection[client]"` **alone is enough**.
+
 ---
 
 ## (Optional) Serve it as an HTTP service
@@ -144,6 +151,11 @@ and be called by URL. Needs the `[serve]` extra (adds only fastapi/uvicorn on to
 pip install "online-face-detection[serve]"
 online-face-serve --model retinaface --device auto --runtime auto --host 127.0.0.1 --port 8001
 ```
+
+**Server flags** (all optional; defaults shown): `--model retinaface` ·
+`--weights KEY|PATH` (default: family default) · `--device {auto,cpu,cuda,mps}` ·
+`--runtime {auto,torch,torchscript,onnx,trt}` · `--precision {auto,fp32,fp16,int8}` ·
+`--conf 0.5` · `--nms 0.4` · `--input-size N` · `--host 127.0.0.1` · `--port 8001`.
 
 | Route | What it does |
 |-------|--------------|
@@ -163,8 +175,14 @@ pip install "online-face-detection[client]"
 ```
 ```python
 from online_face.client import FaceClient
-face = FaceClient("http://127.0.0.1:8001")   # or a cloud URL
-res = face(frame)                            # same shape as det(frame)
+
+face = FaceClient(
+    "http://127.0.0.1:8001",   # the service URL (local or cloud)
+    encode="png",              # how frames go over the wire: "png" (lossless) | "jpeg" (smaller)
+    timeout=30,                # request timeout, seconds
+)
+res = face(frame)              # same shape as det(frame): res.boxes / res.scores / res.landmarks
+face.meta()                    # the service's /meta;  face.healthz() -> readiness
 ```
 
 Compose two services into a pipeline (e.g. face → emotion) by URL — see
