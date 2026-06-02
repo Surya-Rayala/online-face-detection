@@ -95,7 +95,8 @@ def onnx_to_trt(onnx_path: Path, engine_path: Path, *, precision: str = "fp16",
 
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, int(workspace_gb * (1 << 30)))
-    if precision == "fp16" and builder.platform_has_fast_fp16:
+    # TensorRT 10 removed builder.platform_has_fast_fp16; any TRT-10-capable GPU has fast fp16.
+    if precision == "fp16" and getattr(builder, "platform_has_fast_fp16", True):
         config.set_flag(trt.BuilderFlag.FP16)
     if min_shape is not None:
         profile = builder.create_optimization_profile()
