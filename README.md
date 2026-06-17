@@ -197,48 +197,46 @@ curl http://127.0.0.1:8001/meta
 curl -F 'frame=@frame.png;type=image/png' http://127.0.0.1:8001/predict
 ```
 
-**Call it from another process** with the torch-free `[client]` proxy (mirrors `det(frame)`):
+### Client — `[client]` proxy (torch-free: numpy/opencv + requests + websockets)
 
 ```bash
 pip install "online-face-detection[client]"
 ```
+
 ```python
 from online_face.client import FaceClient
 
 face = FaceClient(
-    "http://127.0.0.1:8001",   # the service URL (local or cloud)
+    "http://127.0.0.1:8001",   # service URL (local or cloud)
     encode="jpeg",             # wire format (default): "jpeg" (small, no measurable accuracy loss) | "png" (lossless)
     quality=90,                # JPEG quality (ignored for png)
-    max_side=None,             # if set, downscale longest side before sending; boxes are returned in ORIGINAL coords
-    binary_response=False,     # True -> server returns .npz arrays instead of JSON (skips .tolist(); helps with many boxes)
-    timeout=30,                # request timeout, seconds
+    max_side=None,             # downscale longest side before sending; boxes still returned in ORIGINAL coords
+    binary_response=False,     # True -> .npz array response instead of JSON (skips .tolist(); helps with many boxes)
+    timeout=30,
 )
-res = face(frame)              # same shape as det(frame): res.boxes / res.scores / res.landmarks
-face.meta()                    # the service's /meta;  face.healthz() -> readiness
 ```
 
-### Performance & efficiency
+| Function | What it does | Use when |
+|----------|--------------|----------|
+| `face(frame)` / `face.predict(frame, max_side=…)` | one frame, blocking → `FaceResult` (`.boxes/.scores/.landmarks`, original-frame coords) | simplest case; same-host or any single request |
+| `face.predict_stream(frames, max_workers=K, max_side=…)` | iterator over frames, **K requests in flight** over keep-alive HTTP; yields results **in input order** | one stream over a network where round-trip latency would otherwise stall you |
+| `FaceStreamClient(url, max_inflight=K).predict_stream(frames)` | same, over a **persistent WebSocket** `/stream` (no per-request multipart parsing) | one long-lived/remote stream; lowest per-frame overhead |
+| `face.healthz()` / `face.meta()` | readiness / service contract | startup checks |
 
-The HTTP path's cost is wire encode + transfer + decode + JSON, not the model
-(inference is a few ms). The knobs that matter:
+**Knobs:** `encode="jpeg"` (default; ~2–3× smaller than PNG, no measurable accuracy loss — the model letterboxes to a fixed size). `max_side=N` shrinks encode+transfer+decode together (the detector only ever sees its fixed input size; boxes come back rescaled to the original frame). `binary_response=True` skips JSON boxing when there are many faces.
 
-| Knob | Effect |
-|------|--------|
-| `encode="jpeg"`, `quality=90` | default; ~2–3× smaller/faster than PNG with no measurable accuracy loss (the model letterboxes to a fixed size, smoothing JPEG artifacts) |
-| `max_side=N` | downscale the longest side before encoding — shrinks encode + transfer + server decode together; the detector only ever sees its fixed input size anyway. Boxes/landmarks come back in **original-frame** coords |
-| `client.predict_stream(frames, max_workers=K)` | overlap encode/network/inference across frames over keep-alive — hides round-trip latency; yields results in input order |
-| `FaceStreamClient(...).predict_stream(frames, max_inflight=K)` | persistent WebSocket `/stream` (no per-request multipart parsing); best for remote/WAN |
-| `binary_response=True` | `.npz` array response instead of JSON; helps when there are many boxes |
+### Single stream vs many streams (where `K` workers matter)
 
-**Pick a workflow by where the service runs:**
-- **Same device** — skip HTTP entirely; use the in-process `FaceDetector` directly.
-- **LAN** — `FaceClient(encode="jpeg", max_side≈960)`; the default keep-alive `Session` pools connections. Add `predict_stream` for many frames.
-- **Remote / WAN** — `FaceStreamClient` over `/stream` with `max_side` + `max_inflight` to hide latency.
+The server is **single-process, single-model** (`workers=1`): it accepts many connections at once, but inference runs **sequentially** on one device. So:
+
+- **Same device** — don't use HTTP at all; call the in-process `FaceDetector` directly.
+- **One stream, same host / LAN** — plain `face(frame)`; the keep-alive `Session` already pools the connection. `K=1` is enough (no latency to hide).
+- **One stream, remote (RTT-bound)** — use `predict_stream`/`FaceStreamClient` with **`K ≈ round-trip-time ÷ per-frame server time`, capped at ~2–4**. This keeps the single sequential server busy instead of idling during the network hop. Going higher won't help — the server still processes one frame at a time.
+- **Many simultaneous streams (e.g. N cameras)** — give **each stream its own client/connection** and run them concurrently from your app (one thread/task each). Keep each stream's `K` small (1–2) so no single stream monopolizes the queue. Aggregate throughput is still bounded by the one model — to scale past that, run **multiple server instances** (one per GPU, or replicas behind a load balancer) and shard streams across them.
 
 ### Composing face → emotion (no combined package)
 
-The two packages stay independent — there is intentionally no combined package; the
-glue is two lines of your code.
+The two packages stay independent — there is intentionally no combined package; the glue is two lines of your code.
 
 ```python
 # In-process (same device) — fastest; crops never leave the device:
@@ -247,15 +245,13 @@ from online_emotion import EmotionRecognizer
 det, emo = FaceDetector("retinaface"), EmotionRecognizer("hsemotion")
 r = det(frame); emotions = emo.predict_on_boxes(frame, r.boxes)
 
-# Over the wire (two services) — send only face crops to emotion, not the frame twice:
+# Over the wire (two services) — send only face crops to emotion, not the whole frame twice:
 from online_face.client import FaceClient
 from online_emotion.client import EmotionClient
 face, emo = FaceClient(FACE_URL), EmotionClient(EMO_URL)
 r = face(frame)
 emotions = emo.predict_on_crops(EmotionClient.crop_boxes(frame, r.boxes))
 ```
-
-See **[../testing-pipeline](../testing-pipeline)** for a ready-to-run example.
 
 ---
 
