@@ -189,7 +189,8 @@ online-face-serve --model retinaface --device auto --runtime auto --host 127.0.0
 |-------|--------------|
 | `GET /meta` | self-describing: named, typed inputs/outputs (input `frame: image`; outputs `boxes/scores/landmarks`) |
 | `GET /healthz` | readiness + resolved runtime/device |
-| `POST /predict` | multipart with a `frame` image part → JSON `{outputs, stats}` |
+| `POST /predict` | multipart with a `frame` image part → JSON `{outputs, stats}` (send `Accept: application/x-npz` for a binary array response) |
+| `WS /stream` | persistent socket: one binary frame per message → one JSON reply; pipelined, no per-request multipart parsing |
 
 ```bash
 curl http://127.0.0.1:8001/meta
@@ -206,15 +207,55 @@ from online_face.client import FaceClient
 
 face = FaceClient(
     "http://127.0.0.1:8001",   # the service URL (local or cloud)
-    encode="png",              # how frames go over the wire: "png" (lossless) | "jpeg" (smaller)
+    encode="jpeg",             # wire format (default): "jpeg" (small, no measurable accuracy loss) | "png" (lossless)
+    quality=90,                # JPEG quality (ignored for png)
+    max_side=None,             # if set, downscale longest side before sending; boxes are returned in ORIGINAL coords
+    binary_response=False,     # True -> server returns .npz arrays instead of JSON (skips .tolist(); helps with many boxes)
     timeout=30,                # request timeout, seconds
 )
 res = face(frame)              # same shape as det(frame): res.boxes / res.scores / res.landmarks
 face.meta()                    # the service's /meta;  face.healthz() -> readiness
 ```
 
-Compose two services into a pipeline (e.g. face → emotion) by URL — see
-**[../testing-pipeline](../testing-pipeline)** for a ready-to-run example.
+### Performance & efficiency
+
+The HTTP path's cost is wire encode + transfer + decode + JSON, not the model
+(inference is a few ms). The knobs that matter:
+
+| Knob | Effect |
+|------|--------|
+| `encode="jpeg"`, `quality=90` | default; ~2–3× smaller/faster than PNG with no measurable accuracy loss (the model letterboxes to a fixed size, smoothing JPEG artifacts) |
+| `max_side=N` | downscale the longest side before encoding — shrinks encode + transfer + server decode together; the detector only ever sees its fixed input size anyway. Boxes/landmarks come back in **original-frame** coords |
+| `client.predict_stream(frames, max_workers=K)` | overlap encode/network/inference across frames over keep-alive — hides round-trip latency; yields results in input order |
+| `FaceStreamClient(...).predict_stream(frames, max_inflight=K)` | persistent WebSocket `/stream` (no per-request multipart parsing); best for remote/WAN |
+| `binary_response=True` | `.npz` array response instead of JSON; helps when there are many boxes |
+
+**Pick a workflow by where the service runs:**
+- **Same device** — skip HTTP entirely; use the in-process `FaceDetector` directly.
+- **LAN** — `FaceClient(encode="jpeg", max_side≈960)`; the default keep-alive `Session` pools connections. Add `predict_stream` for many frames.
+- **Remote / WAN** — `FaceStreamClient` over `/stream` with `max_side` + `max_inflight` to hide latency.
+
+### Composing face → emotion (no combined package)
+
+The two packages stay independent — there is intentionally no combined package; the
+glue is two lines of your code.
+
+```python
+# In-process (same device) — fastest; crops never leave the device:
+from online_face import FaceDetector
+from online_emotion import EmotionRecognizer
+det, emo = FaceDetector("retinaface"), EmotionRecognizer("hsemotion")
+r = det(frame); emotions = emo.predict_on_boxes(frame, r.boxes)
+
+# Over the wire (two services) — send only face crops to emotion, not the frame twice:
+from online_face.client import FaceClient
+from online_emotion.client import EmotionClient
+face, emo = FaceClient(FACE_URL), EmotionClient(EMO_URL)
+r = face(frame)
+emotions = emo.predict_on_crops(EmotionClient.crop_boxes(frame, r.boxes))
+```
+
+See **[../testing-pipeline](../testing-pipeline)** for a ready-to-run example.
 
 ---
 

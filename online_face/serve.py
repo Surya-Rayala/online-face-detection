@@ -36,8 +36,9 @@ def create_app(model: str = "retinaface", *, weights=None, runtime: str = "auto"
                device: str = "auto", precision: str = "auto", conf: float = 0.5,
                nms: float = 0.4, input_size=None):
     """Build a FastAPI app wrapping one eagerly-constructed ``FaceDetector``."""
-    from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse
+    from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+    from fastapi.responses import JSONResponse, Response
+    from starlette.concurrency import run_in_threadpool
 
     from . import _wire
     from .detector import FaceDetector
@@ -53,6 +54,10 @@ def create_app(model: str = "retinaface", *, weights=None, runtime: str = "auto"
         return {"name": "online_face", "modality": "vision", "model": model,
                 "runtime": cfg.runtime, "device": cfg.device,
                 "inputs": _INPUTS, "outputs": _OUTPUTS}
+
+    def _outputs(res) -> Dict[str, Any]:
+        return {"boxes": res.boxes.tolist(), "scores": res.scores.tolist(),
+                "landmarks": res.landmarks.tolist(), "shape": list(res.shape)}
 
     @app.get("/meta")
     def meta() -> Dict[str, Any]:
@@ -77,11 +82,28 @@ def create_app(model: str = "retinaface", *, weights=None, runtime: str = "auto"
         if "frame" not in inputs:
             return JSONResponse({"error": "missing required input 'frame'"}, status_code=422)
         res = det(inputs["frame"])
-        return {"outputs": {"boxes": res.boxes.tolist(),
-                            "scores": res.scores.tolist(),
-                            "landmarks": res.landmarks.tolist(),
-                            "shape": list(res.shape)},
-                "stats": det.stats.as_dict()}
+        if _wire.CT_NPZ in request.headers.get("accept", ""):
+            # binary response: skip JSON .tolist() boxing (helps when many boxes)
+            body = _wire.encode_npz(boxes=res.boxes, scores=res.scores,
+                                    landmarks=res.landmarks, shape=res.shape)
+            return Response(content=body, media_type=_wire.CT_NPZ)
+        return {"outputs": _outputs(res), "stats": det.stats.as_dict()}
+
+    @app.websocket("/stream")
+    async def stream(ws: WebSocket):
+        """Persistent low-overhead path: each binary message is one encoded frame;
+        the reply is one JSON ``{"outputs": {...}}``. Replies are FIFO (the model
+        runs sequentially), so a pipelined client matches them by send order.
+        Inference runs in a threadpool so it never blocks the event loop."""
+        await ws.accept()
+        try:
+            while True:
+                data = await ws.receive_bytes()
+                img = _wire.decode_image(data)
+                res = await run_in_threadpool(det, img)
+                await ws.send_json({"outputs": _outputs(res)})
+        except WebSocketDisconnect:
+            return
 
     return app
 
