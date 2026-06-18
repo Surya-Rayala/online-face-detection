@@ -34,6 +34,12 @@ class ExportSpec:
     trt_min_batch: int = 1
     trt_opt_batch: int = 1
     trt_max_batch: int = 1
+    # When True the exported graph already does decode + NMS and emits fixed,
+    # padded detections (num_detections, boxes, scores, landmarks). The runtime
+    # then only unpads + rescales. ``variant`` is folded into the artifact cache
+    # key so a graph engine never collides with a raw one.
+    postprocess_in_graph: bool = False
+    variant: str = ""
 
 
 class ModelFamily(ABC):

@@ -29,13 +29,14 @@ class StreamingModel:
     package: str = "online_inference"
 
     def __init__(self, *, family, weights, runtime, device, precision,
-                 input_size, cache_dir, warmup, display) -> None:
+                 input_size, cache_dir, warmup, display, export_opts=None) -> None:
         self._family = family
         self._device = resolve_device(device)
         self._precision = resolve_precision(precision, self._device)
         self._cache = ArtifactCache(cache_dir)
         self._resolved = family.resolve_weights(weights, self._cache)
         self._input_size: Tuple[int, int] = family.resolve_input_size(input_size, self._resolved)
+        self._export_opts = dict(export_opts or {})
         self._backend = None
         self._native_model = None
 
@@ -49,11 +50,14 @@ class StreamingModel:
         else:
             self._runtime = resolve_runtime(self._device, runtime)
 
+        _extra = {"arch": self._resolved.arch}
+        if self._export_opts.get("postprocess") == "graph":
+            _extra["postprocess"] = "graph"
         self._config = InferenceConfig(
             package=self.package, model=family.name, weights=self._resolved.key,
             weights_fingerprint=self._resolved.fingerprint, runtime=self._runtime,
             device=self._device, precision=self._precision, input_size=self._input_size,
-            extra={"arch": self._resolved.arch},
+            extra=_extra,
         )
 
         if self._resolved.meta.get("native"):
@@ -106,17 +110,46 @@ class StreamingModel:
                 f"choose an exportable weight to use runtime={rt!r}."
             )
 
-        spec = family.export_spec(self._input_size)
+        pp = self._export_opts.get("postprocess", "raw")
+        mf = int(self._export_opts.get("max_faces", 256))
+        if pp == "graph" and rt == "torchscript":
+            raise RuntimeUnavailableError(
+                "postprocess='graph' is not supported on the torchscript runtime "
+                "(the torchvision backbone isn't scriptable); use runtime='onnx' or 'trt'.")
+        if pp == "graph" and rt == "trt":
+            warn_once(_log, "trt_graph_experimental",
+                      "postprocess='graph' on TensorRT is EXPERIMENTAL and unverified: it feeds the "
+                      "ONNX NonMaxSuppression graph (data-dependent shapes) to the TRT parser, whose support "
+                      "varies by version. Validate on your GPU; for production prefer raw export (NMS in "
+                      "Python) or a dedicated EfficientNMS_TRT plugin graph.")
+        try:
+            spec = family.export_spec(self._input_size, postprocess=pp, max_faces=mf)
+        except TypeError:                                # families without the extended signature
+            spec = family.export_spec(self._input_size)
         dynamic = spec.dynamic_axes is not None
+        # graph postprocess bakes conf/nms/max_faces into the graph -> they must be
+        # part of the cache identity so a graph engine never collides with a raw one.
+        variant = ""
+        if pp == "graph":
+            variant = (f"ppgraph-c{self._export_opts.get('conf')}-"
+                       f"n{self._export_opts.get('nms')}-mf{mf}")
 
         def export_fn(tmp: Path) -> str:
             import torch
 
-            module = family.build_module(resolved, "cpu", "fp32").eval()
+            if pp == "graph":
+                module = family.build_export_module(
+                    resolved, self._input_size, conf=self._export_opts.get("conf", 0.5),
+                    nms=self._export_opts.get("nms", 0.4), max_faces=mf).eval()
+            else:
+                module = family.build_module(resolved, "cpu", "fp32").eval()
             example = torch.zeros((1, 3, H, W), dtype=torch.float32)
             if rt == "torchscript":
                 out = tmp / "model.torchscript"
-                to_torchscript(module, example, out)
+                if pp == "graph":                         # data-dependent NMS -> must script, not trace
+                    torch.jit.script(module).save(str(out))
+                else:
+                    to_torchscript(module, example, out)
                 return out.name
             onnx_path = tmp / "model.onnx"
             to_onnx(module, example, onnx_path, input_names=spec.input_names,
@@ -131,7 +164,8 @@ class StreamingModel:
             return engine.name
 
         ref = self._cache.ensure(config=self._config, runtime=rt, dynamic=dynamic,
-                                 export_fn=export_fn, source_weights=str(resolved.path))
+                                 export_fn=export_fn, source_weights=str(resolved.path),
+                                 variant=variant)
         return load_artifact_backend(ref.path, rt, device, precision, cache_dir=str(self._cache.root))
 
     # -- inference with safety fallback -----------------------------------

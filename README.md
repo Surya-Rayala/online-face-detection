@@ -16,13 +16,20 @@ res = det(frame)        # res.boxes, res.scores, res.landmarks
 
 ## Install
 
+Pick a runtime extra **and** an OpenCV build (`gui` for desktop, `headless` for servers/Docker/Jetson):
+
 ```bash
-pip install "online-face-detection[torch]"
+pip install "online-face-detection[torch,gui]"        # desktop (enables cv2 windows / --display)
+pip install "online-face-detection[torch,headless]"   # servers, Docker, Jetson (no GTK/X11)
 ```
 
-That's all you need for most setups — `[torch]` is the default runtime and works on CPU,
-CUDA, and Mac (MPS). Other backends (`onnx`, `tensorrt`, serving) are **optional extras** you
-can add anytime — see [Install options](#install-options). (Prefer `uv`? See [Misc](#misc).)
+`[torch]` is the default runtime and works on CPU, CUDA, and Mac (MPS). **OpenCV is not bundled by
+default** — you choose `[gui]` (`opencv-python`) or `[headless]` (`opencv-python-headless`). On
+**Jetson** the GUI build pulls X11/GTK and frequently fails to build against the CUDA toolchain
+(`nvcc` errors), so use `[headless]` — or install with **neither** and rely on JetPack's system
+OpenCV (also use JetPack's torch/onnxruntime there, not the PyPI wheels). Other backends (`onnx`,
+`tensorrt`, serving, client) are optional extras — see [Install options](#install-options).
+(Prefer `uv`? See [Misc](#misc).)
 
 ---
 
@@ -139,18 +146,21 @@ adds those packages (it won't reinstall torch). You can also install several at 
 
 | Extra | Adds | Install when you want to… |
 |-------|------|---------------------------|
+| `[gui]` | opencv-python | desktop OpenCV (enables `cv2.imshow` / `--display`) |
+| `[headless]` | opencv-python-headless | OpenCV for servers / Docker / Jetson (no GTK/X11) |
 | `[torch]` | torch, torchvision, retinaface-pytorch | **default** runtime (CPU / CUDA / MPS) |
 | `[onnx]`  | onnxruntime, onnx, onnxsim | run or export the ONNX backend |
 | `[trt]`   | our ONNX export path + fp16 converter (**not** tensorrt) | run the TensorRT backend — install TensorRT yourself first, **see the note below** |
 | `[serve]` | fastapi, uvicorn | host the model as an HTTP service (below) |
-| `[client]` | requests | call a remote service (torch-free, below) |
+| `[client]` | requests, websockets | call a remote service (torch-free, below) |
 
 **Which do I actually need?**
-- `pip install online-face-detection` (no `[...]`) → **core only** (numpy/opencv); **no runtime, can't run inference**. Use this only when torch is provided another way (e.g. Jetson/JetPack wheels).
-- `[torch]` → the **foundation**; required to run the model locally (CPU/CUDA/MPS). Start here.
+- **Always pick an OpenCV build:** `[gui]` (desktop) or `[headless]` (servers/Docker/Jetson). OpenCV is **not** in core, so every real install combines it with a runtime/client extra, e.g. `[torch,gui]` or `[client,headless]`. On Jetson, prefer `[headless]` or rely on JetPack's system OpenCV (install neither).
+- `pip install online-face-detection` (no `[...]`) → **core only** (numpy/tqdm); no OpenCV, no runtime — can't run. Use only when OpenCV/torch are provided another way (e.g. JetPack).
+- `[torch]` → the **foundation**; required to run the model locally (CPU/CUDA/MPS). Start here (e.g. `[torch,gui]`).
 - `[onnx]` / `[trt]` → **add** a backend *on top of* torch (they don't replace it). `[trt]` pulls `[onnx]` + an fp16 converter but **not tensorrt** — install TensorRT for your CUDA yourself (see the note below).
-- `[serve]` → runs the model in-process, so it needs torch too: `pip install "online-face-detection[torch,serve]"`.
-- `[client]` → the **only torch-free** one — it just calls a remote service, so `pip install "online-face-detection[client]"` **alone is enough**.
+- `[serve]` → runs the model in-process, so it needs torch + an OpenCV build: `pip install "online-face-detection[torch,serve,gui]"`.
+- `[client]` → the **only torch-free** path; add an OpenCV build: `pip install "online-face-detection[client,headless]"`.
 
 > [!CAUTION]
 > **TensorRT setup.** `[trt]` adds our ONNX export path + fp16 converter but **does not install TensorRT** — its PyPI wheel always grabs the newest CUDA build (e.g. cu13), which won't match your system. Install TensorRT yourself (plus a matching CUDA build of torch). On an NVIDIA machine:
@@ -197,10 +207,10 @@ curl http://127.0.0.1:8001/meta
 curl -F 'frame=@frame.png;type=image/png' http://127.0.0.1:8001/predict
 ```
 
-### Client — `[client]` proxy (torch-free: numpy/opencv + requests + websockets)
+### Client — `[client]` proxy (torch-free: numpy + requests + websockets, plus an OpenCV build)
 
 ```bash
-pip install "online-face-detection[client]"
+pip install "online-face-detection[client,headless]"   # servers/Jetson; use [client,gui] on desktop
 ```
 
 ```python
@@ -216,23 +226,49 @@ face = FaceClient(
 )
 ```
 
-| Function | What it does | Use when |
-|----------|--------------|----------|
-| `face(frame)` / `face.predict(frame, max_side=…)` | one frame, blocking → `FaceResult` (`.boxes/.scores/.landmarks`, original-frame coords) | simplest case; same-host or any single request |
-| `face.predict_stream(frames, max_workers=K, max_side=…)` | iterator over frames, **K requests in flight** over keep-alive HTTP; yields results **in input order** | one stream over a network where round-trip latency would otherwise stall you |
-| `FaceStreamClient(url, max_inflight=K).predict_stream(frames)` | same, over a **persistent WebSocket** `/stream` (no per-request multipart parsing) | one long-lived/remote stream; lowest per-frame overhead |
-| `face.healthz()` / `face.meta()` | readiness / service contract | startup checks |
+There are exactly **two** client tools — pick by workload:
 
-**Knobs:** `encode="jpeg"` (default; ~2–3× smaller than PNG, no measurable accuracy loss — the model letterboxes to a fixed size). `max_side=N` shrinks encode+transfer+decode together (the detector only ever sees its fixed input size; boxes come back rescaled to the original frame). `binary_response=True` skips JSON boxing when there are many faces.
+| Tool | What it does | Use when |
+|------|--------------|----------|
+| **`FaceClient`** (unary) — `face(frame)` / `face.predict(frame, max_side=…)` | one request per call, blocking → `FaceResult` (`.boxes/.scores/.landmarks`, original-frame coords); also `healthz()`/`meta()` | one-offs, or a fresh connection per call |
+| **`FaceStream`** (async, long-lived) — `await s.push(frame, meta)` + `async for result, meta in s.results()` | holds WebSockets across a **pool of endpoints**, results arrive **as completed (out of order)** tagged with your metadata; auto-scales concurrency to a target fps/latency | continuous / many camera streams, especially over a network |
 
-### Single stream vs many streams (where `K` workers matter)
+**Unary knobs:** `encode="jpeg"` (default; ~2–3× smaller than PNG, no measurable accuracy loss — the model letterboxes to a fixed size). `max_side=N` shrinks encode+transfer+decode together (boxes come back rescaled to the original frame). `binary_response=True` skips JSON boxing when there are many faces.
 
-The server is **single-process, single-model** (`workers=1`): it accepts many connections at once, but inference runs **sequentially** on one device. So:
+**What you get back** — a `FaceResult` (frozen dataclass), the same from both clients:
 
-- **Same device** — don't use HTTP at all; call the in-process `FaceDetector` directly.
-- **One stream, same host / LAN** — plain `face(frame)`; the keep-alive `Session` already pools the connection. `K=1` is enough (no latency to hide).
-- **One stream, remote (RTT-bound)** — use `predict_stream`/`FaceStreamClient` with **`K ≈ round-trip-time ÷ per-frame server time`, capped at ~2–4**. This keeps the single sequential server busy instead of idling during the network hop. Going higher won't help — the server still processes one frame at a time.
-- **Many simultaneous streams (e.g. N cameras)** — give **each stream its own client/connection** and run them concurrently from your app (one thread/task each). Keep each stream's `K` small (1–2) so no single stream monopolizes the queue. Aggregate throughput is still bounded by the one model — to scale past that, run **multiple server instances** (one per GPU, or replicas behind a load balancer) and shard streams across them.
+| field | type | meaning |
+|---|---|---|
+| `boxes` | `np.ndarray (N, 4)` float32 | face boxes, **xyxy**, in **original-frame** pixels |
+| `scores` | `np.ndarray (N,)` float32 | detection confidence per box |
+| `landmarks` | `np.ndarray (N, 5, 2)` float32 | 5 facial points (eyes, nose, mouth corners), original-frame pixels |
+| `shape` | `tuple (H, W)` | the original frame size the coords refer to |
+
+`len(result)` == `N` (number of faces). `FaceClient(frame)` returns one `FaceResult`; `FaceStream.results()` yields `(FaceResult, meta)` per frame (your `meta` passed straight through). The in-process `FaceDetector` returns a `FaceFrameResult` — same fields plus `frame_index` and `config`.
+
+### `FaceStream` — continuous, multi-stream, auto-scaling
+
+```python
+import asyncio
+from online_face import FaceStream
+
+async def run(sources):
+    async with FaceStream(["http://gpu0:8001", "http://gpu1:8001"],   # one URL or a pool
+                          target_fps=30, target_latency_ms=150,
+                          max_side=960, max_inflight=64) as s:
+        async def pump():
+            for frame, info in sources:        # info = your per-frame metadata (stream id, ts, …)
+                await s.push(frame, meta=info)  # awaits only under backpressure
+            await s.aclose()
+        asyncio.create_task(pump())
+        async for result, info in s.results():  # out of order; pair by `info`
+            handle(info, result)
+        # s.stats() -> live {conns, target_inflight, rtt_ms, infer_ms, bound, …}
+```
+
+**How the auto-scaling works.** The session ramps in-flight concurrency up while latency stays under target and throughput keeps rising, and backs off when latency breaches or throughput plateaus. It distinguishes **network-bound** (more sockets / a bigger pool help) from **model-bound** (the server's queue is growing — more inflight just adds latency) using server-reported `infer_ms`/`queue_depth` vs measured RTT. Give it **one URL** and it tunes concurrency against that single model (it can't exceed one model's throughput); give it a **pool** and it scales out across replicas/GPUs and holds when all are saturated.
+
+> Same device? Skip HTTP entirely and call the in-process `FaceDetector`.
 
 ### Composing face → emotion (no combined package)
 
@@ -253,16 +289,26 @@ r = face(frame)
 emotions = emo.predict_on_crops(EmotionClient.crop_boxes(frame, r.boxes))
 ```
 
+### Faster inference: bake decode + NMS into the graph (`postprocess="graph"`)
+
+RetinaFace post-processing (prior decode + NMS) costs about as much as inference itself. With an exported runtime you can fold it into the graph so it runs in the engine, not Python — detections are identical to the raw path:
+
+```python
+det = FaceDetector("retinaface", runtime="onnx", postprocess="graph", conf=0.5, nms=0.4)
+# or:  online-face-serve --runtime onnx --postprocess graph
+```
+Notes: `conf`/`nms`/`max_faces` are **baked at export time** (changing them re-exports); the artifact is **fixed to one input size**. **`onnx` is verified.** **`trt` is experimental/unverified** — it parses the ONNX NonMaxSuppression graph, which TRT support varies for; validate on your GPU (for production, prefer raw export or an `EfficientNMS_TRT` plugin graph). **Not** available on the eager `torch` runtime (no graph) or `torchscript` (backbone isn't scriptable). Raw export remains the default.
+
 ---
 
 ## Misc
 
 ### Install with uv
 
-Same as pip, with `uv`:
+Same as pip, with `uv` (include an OpenCV build — `gui` or `headless`):
 ```bash
-uv add "online-face-detection[torch]"            # into a uv project
-uv pip install "online-face-detection[torch]"    # into the active venv
+uv add "online-face-detection[torch,gui]"            # into a uv project
+uv pip install "online-face-detection[torch,headless]"    # into the active venv
 ```
 
 ### Jetson (JetPack)

@@ -67,6 +67,11 @@ class RetinaFaceFamily(ModelFamily):
         return self._prior_cache[key]
 
     def postprocess(self, raw, ctx, params: Dict[str, Any]) -> Dict[str, Any]:
+        # A graph that bakes decode+NMS emits 4 padded outputs; the raw graph emits
+        # 3 (loc, conf, landms). Auto-detect so no runtime flag threading is needed.
+        if len(raw) == 4:
+            return self._postprocess_graph(raw, ctx)
+
         import torch
         from torchvision.ops import nms
 
@@ -96,9 +101,75 @@ class RetinaFaceFamily(ModelFamily):
             "landmarks": lm.detach().cpu().numpy(),
         }
 
-    def export_spec(self, input_size: Tuple[int, int]) -> ExportSpec:
+    def _postprocess_graph(self, raw, ctx) -> Dict[str, Any]:
+        """Graph already did decode + NMS (padded outputs). Just unpad + rescale."""
+        import torch
+
+        num, boxes, scores, lms = raw
+        n = int(torch.as_tensor(num).reshape(-1)[0].item())
+        boxes = torch.as_tensor(boxes).reshape(-1, 4)[:n].float()
+        scores = torch.as_tensor(scores).reshape(-1)[:n].float()
+        lms = torch.as_tensor(lms).reshape(-1, 10)[:n].reshape(-1, 5, 2).float()
+        if n > 0:
+            boxes = rescale_boxes(boxes, ctx["meta"])
+            lms = rescale_points(lms, ctx["meta"])
+        return {"boxes": boxes.detach().cpu().numpy(),
+                "scores": scores.detach().cpu().numpy(),
+                "landmarks": lms.detach().cpu().numpy()}
+
+    def export_spec(self, input_size: Tuple[int, int], postprocess: str = "raw",
+                    max_faces: int = 256) -> ExportSpec:
+        if postprocess == "graph":
+            # decode + NMS baked in; fixed, padded detections. opset 17 for NonMaxSuppression.
+            return ExportSpec(input_names=["input"],
+                              output_names=["num_detections", "boxes", "scores", "landmarks"],
+                              dynamic_axes=None, opset=17,
+                              postprocess_in_graph=True, variant=f"pp-graph-mf{int(max_faces)}")
         return ExportSpec(input_names=["input"], output_names=["loc", "conf", "landms"],
                           dynamic_axes=None, opset=13)
+
+    def build_export_module(self, resolved: ResolvedWeights, input_size: Tuple[int, int],
+                            conf: float, nms: float, max_faces: int = 256):
+        """An nn.Module = base RetinaFace + decode + NMS + fixed padding, emitting
+        (num_detections, boxes, scores, landmarks) in letterboxed-input pixel coords.
+        Priors are baked for this exact input size (so the artifact is size-specific)."""
+        import torch
+        from torchvision.ops import nms as tv_nms
+
+        from ..models.retinaface import decode, decode_landm
+
+        base = self.build_module(resolved, "cpu", "fp32").eval()
+        h_in, w_in = int(input_size[0]), int(input_size[1])
+        priors = prior_box((h_in, w_in), "cpu")
+        v = _VARIANCE
+        conf_t, iou_t, mf = float(conf), float(nms), int(max_faces)
+
+        class _RetinaWithPostprocess(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.base = base
+                self.register_buffer("priors", priors)
+                self.register_buffer("box_scale", torch.tensor([w_in, h_in, w_in, h_in], dtype=torch.float32))
+                self.register_buffer("lm_scale", torch.tensor([w_in, h_in] * 5, dtype=torch.float32))
+
+            def forward(self, x):
+                loc, conf, landms = self.base(x)
+                boxes = decode(loc[0].float(), self.priors, v) * self.box_scale
+                lms = decode_landm(landms[0].float(), self.priors, v) * self.lm_scale
+                scores = conf[0].float()[:, 1]
+                keep = scores > conf_t
+                boxes, scores, lms = boxes[keep], scores[keep], lms[keep]
+                order = tv_nms(boxes, scores, iou_t)[:mf]
+                boxes, scores, lms = boxes[order], scores[order], lms[order]
+                n = scores.shape[0]
+                # pad to a fixed mf rows (Concat + Slice — exports cleanly, no dynamic pad size)
+                ob = torch.cat([boxes, boxes.new_zeros((mf, 4))], 0)[:mf].unsqueeze(0)
+                os_ = torch.cat([scores, scores.new_zeros((mf,))], 0)[:mf].unsqueeze(0)
+                ol = torch.cat([lms, lms.new_zeros((mf, 10))], 0)[:mf].unsqueeze(0)
+                num = torch.zeros((1,), dtype=torch.int64) + n
+                return num, ob, os_, ol
+
+        return _RetinaWithPostprocess().eval()
 
     def resolve_input_size(self, input_size, resolved=None) -> Tuple[int, int]:
         return super().resolve_input_size(input_size, resolved)

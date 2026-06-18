@@ -41,12 +41,26 @@ class FaceDetector(StreamingModel):
 
     def __init__(self, model: str = "retinaface", *, weights=None, runtime: str = "auto",
                  device="auto", precision: str = "auto", conf: float = 0.5, nms: float = 0.4,
-                 input_size=None, cache_dir=None, warmup: bool = True, display: bool = False) -> None:
+                 input_size=None, cache_dir=None, warmup: bool = True, display: bool = False,
+                 postprocess: str = "raw", max_faces: int = 256) -> None:
         self.conf = float(conf)
         self.nms = float(nms)
+        self.postprocess = postprocess
+        self.max_faces = int(max_faces)
+        export_opts = None
+        if postprocess == "graph":
+            # bake decode+NMS into the exported graph (torchscript/onnx/trt); not for
+            # the eager torch runtime (no graph). conf/nms become fixed at export time.
+            export_opts = {"postprocess": "graph", "conf": self.conf,
+                           "nms": self.nms, "max_faces": self.max_faces}
         super().__init__(family=get_family(model), weights=weights, runtime=runtime, device=device,
                          precision=precision, input_size=input_size, cache_dir=cache_dir,
-                         warmup=warmup, display=display)
+                         warmup=warmup, display=display, export_opts=export_opts)
+        if postprocess == "graph" and self.runtime == "torch":
+            from .runtime.logging import get_logger
+            get_logger("retinaface").warning(
+                "postprocess='graph' needs an exported runtime (torchscript/onnx/trt); "
+                "the eager torch runtime ignores it and runs decode+NMS in Python.")
 
     # -- single frame ------------------------------------------------------
     def predict(self, frame: Frame, *, frame_index: Optional[int] = None) -> FaceFrameResult:

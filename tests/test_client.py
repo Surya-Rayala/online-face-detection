@@ -5,8 +5,6 @@ UP to original-frame coords, and report the ORIGINAL shape.
 """
 from __future__ import annotations
 
-import time
-
 import numpy as np
 
 from online_face._wire import decode_image
@@ -77,26 +75,3 @@ def test_per_call_max_side_overrides_ctor():
     frame = np.zeros((1000, 1000, 3), "uint8")
     client.predict(frame, max_side=250)
     assert max(sess.last_sent_shape) == 250
-
-
-class _OrderEchoSession:
-    """Echoes a box whose x1 == the frame's (constant) pixel value, and returns
-    later-index frames FASTER — so results complete out of order on purpose."""
-
-    def post(self, url, files=None, timeout=None, **kw):
-        img = decode_image(files["frame"][1])
-        v = int(round(float(img.mean())))
-        time.sleep(0.02 * ((80 - v) % 80) / 10.0)
-        return _Resp({"outputs": {
-            "boxes": [[v, v, v + 1, v + 1]], "scores": [1.0],
-            "landmarks": [[[v, v]] * 5], "shape": [img.shape[0], img.shape[1]]}})
-
-
-def test_predict_stream_preserves_input_order():
-    sess = _OrderEchoSession()
-    client = FaceClient(session=sess)
-    frames = [np.full((24, 24, 3), i * 10, "uint8") for i in range(8)]
-    got = list(client.predict_stream(frames, max_workers=4))
-    assert len(got) == 8
-    # despite inverted latency, results come back in input order
-    assert [round(float(g.boxes[0, 0]) / 10.0) for g in got] == list(range(8))

@@ -44,32 +44,6 @@ def build_face_result(out: dict, orig_h: int, orig_w: int, scale: float) -> "Fac
     return FaceResult(boxes, scores, landmarks, (orig_h, orig_w))
 
 
-def _pipeline(fn, items, max_workers: int):
-    """Run ``fn`` over ``items`` with up to ``max_workers`` calls in flight, yielding
-    results in input order. Generic over the per-item call (plain HTTP overlap)."""
-    from collections import deque
-    from concurrent.futures import ThreadPoolExecutor
-
-    ex = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
-    try:
-        it = iter(items)
-        window: deque = deque()
-        for _ in range(max(1, int(max_workers))):
-            try:
-                window.append(ex.submit(fn, next(it)))
-            except StopIteration:
-                break
-        while window:
-            result = window.popleft().result()
-            try:
-                window.append(ex.submit(fn, next(it)))
-            except StopIteration:
-                pass
-            yield result
-    finally:
-        ex.shutdown(wait=False)
-
-
 class FaceClient:
     """Remote proxy mirroring ``FaceDetector``'s per-frame call surface."""
 
@@ -112,14 +86,6 @@ class FaceClient:
         return build_face_result(out, orig_h, orig_w, scale)
 
     __call__ = predict
-
-    def predict_stream(self, frames, *, max_workers: int = 4,
-                       max_side: Optional[int] = None):
-        """Overlap encode + network round-trip + parse across frames using a thread
-        pool over the pooled keep-alive Session. Yields FaceResult in input order.
-        Hides WAN latency without a persistent socket; ``max_workers`` ≈ how many
-        frames to keep in flight. Torch-free (stdlib threads + requests)."""
-        return _pipeline(lambda f: self.predict(f, max_side=max_side), frames, max_workers)
 
     def close(self) -> None:
         self._session.close()

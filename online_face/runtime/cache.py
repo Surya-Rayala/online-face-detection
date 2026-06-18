@@ -55,7 +55,8 @@ class ArtifactCache:
 
     # -- key ---------------------------------------------------------------
     def key(self, *, package: str, model: str, weights_fingerprint: str, runtime: str,
-            precision: str, input_shape: Sequence[int], dynamic: bool, device: str) -> str:
+            precision: str, input_shape: Sequence[int], dynamic: bool, device: str,
+            variant: str = "") -> str:
         payload = {
             "schema": "online-artifact-v1",
             "package": package,
@@ -67,6 +68,8 @@ class ArtifactCache:
             "dynamic": bool(dynamic),
             "device_identity": device_identity(runtime, device),
         }
+        if variant:                       # e.g. graph-postprocess engines; absent -> unchanged keys
+            payload["variant"] = variant
         return _sha1_short(json.dumps(payload, sort_keys=True))
 
     # -- lock --------------------------------------------------------------
@@ -95,16 +98,19 @@ class ArtifactCache:
 
     # -- ensure ------------------------------------------------------------
     def ensure(self, *, config: InferenceConfig, runtime: str, dynamic: bool,
-               export_fn: Callable[[Path], str], source_weights: str = "") -> ArtifactRef:
+               export_fn: Callable[[Path], str], source_weights: str = "",
+               variant: str = "") -> ArtifactRef:
         """Return a cached artifact, building it (under lock) on a miss.
 
         ``export_fn(tmp_dir)`` must write the artifact into ``tmp_dir`` and
         return its filename. ``export_meta.json`` is written alongside it.
+        ``variant`` distinguishes otherwise-identical configs (e.g. a graph that
+        bakes in decode+NMS) so they never share a cache key.
         """
         key = self.key(package=config.package, model=config.model,
                        weights_fingerprint=config.weights_fingerprint, runtime=runtime,
                        precision=config.precision, input_shape=(1, 3, *config.input_size),
-                       dynamic=dynamic, device=config.device)
+                       dynamic=dynamic, device=config.device, variant=variant)
         art_dir = self.artifacts_dir / key
 
         hit = self._try_load(art_dir, runtime, config.device)
