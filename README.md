@@ -249,26 +249,60 @@ There are exactly **two** client tools — pick by workload:
 ### `FaceStream` — continuous, multi-stream, auto-scaling
 
 ```python
-import asyncio
+import asyncio, time
 from online_face import FaceStream
 
 async def run(sources):
-    async with FaceStream(["http://gpu0:8001", "http://gpu1:8001"],   # one URL or a pool
-                          target_fps=30, target_latency_ms=150,
-                          max_side=960, max_inflight=64) as s:
-        async def pump():
-            for frame, info in sources:        # info = your per-frame metadata (stream id, ts, …)
-                await s.push(frame, meta=info)  # awaits only under backpressure
-            await s.aclose()
+    # `sources` yields (frame, meta). `meta` is ANY object you choose — it is NOT sent to the
+    # server; it's kept client-side and handed back with that frame's result so YOU can tell
+    # which output is which. Put whatever you need to route the result, e.g.:
+    #     meta = {"stream": cam_id, "i": frame_index, "t": time.time()}
+    async with FaceStream(
+        ["http://gpu0:8001", "http://gpu1:8001"],  # a single URL, or a POOL of replicas/GPUs
+        target_fps=30,            # controller aims for this throughput…
+        target_latency_ms=150,    # …while keeping end-to-end latency under this
+        max_side=960,             # downscale before sending (boxes still returned in ORIGINAL coords)
+        max_inflight=64,          # ceiling on frames in flight across the pool
+    ) as stream:
+
+        async def pump():                                  # producer: push frames in
+            for frame, meta in sources:                    # frame: (H,W,3) BGR uint8 (or torch CHW)
+                await stream.push(frame, meta=meta)        # non-blocking; awaits only under backpressure
+            await stream.aclose()                          # end-of-stream (drains in-flight first)
         asyncio.create_task(pump())
-        async for result, info in s.results():  # out of order; pair by `info`
-            handle(info, result)
-        # s.stats() -> live {conns, target_inflight, rtt_ms, infer_ms, bound, …}
+
+        # consumer: results arrive AS COMPLETED — i.e. OUT OF ORDER. Each item is a 2-tuple:
+        #     (result: FaceResult, meta)        # `meta` is exactly the object you pushed
+        # Identify / reassemble using `meta` — never assume arrival order == push order.
+        async for result, meta in stream.results():
+            cam, idx = meta["stream"], meta["i"]           # <- how you know which frame this is
+            #   result.boxes      -> np.ndarray (N, 4)  xyxy, ORIGINAL-frame pixels
+            #   result.scores     -> np.ndarray (N,)    confidence per box
+            #   result.landmarks  -> np.ndarray (N,5,2) 5 points per face
+            #   result.shape      -> (H, W)             original frame size
+            for (x1, y1, x2, y2), score in zip(result.boxes, result.scores):
+                handle(cam, idx, x1, y1, x2, y2, score)
+            # stream.stats() -> live dict:
+            #   {conns, target_inflight, rtt_ms, srv_ms, infer_ms, queue_depth, bound, ...}
 ```
 
 **How the auto-scaling works.** The session ramps in-flight concurrency up while latency stays under target and throughput keeps rising, and backs off when latency breaches or throughput plateaus. It distinguishes **network-bound** (more sockets / a bigger pool help) from **model-bound** (the server's queue is growing — more inflight just adds latency) using server-reported `infer_ms`/`queue_depth` vs measured RTT. Give it **one URL** and it tunes concurrency against that single model (it can't exceed one model's throughput); give it a **pool** and it scales out across replicas/GPUs and holds when all are saturated.
 
 > Same device? Skip HTTP entirely and call the in-process `FaceDetector`.
+
+### Faster inference: bake decode + NMS into the graph (`postprocess="graph"`)
+
+RetinaFace post-processing (prior decode + NMS) costs about as much as inference itself. With an exported runtime you can fold it into the graph so it runs in the engine, not Python — detections are identical to the raw path:
+
+```python
+det = FaceDetector("retinaface", runtime="onnx", postprocess="graph", conf=0.5, nms=0.4)
+# or:  online-face-serve --runtime onnx --postprocess graph
+```
+Notes: `conf`/`nms`/`max_faces` are **baked at export time** (changing them re-exports); the artifact is **fixed to one input size**. **`onnx` is verified.** **`trt` is experimental/unverified** — it parses the ONNX NonMaxSuppression graph, which TRT support varies for; validate on your GPU (for production, prefer raw export or an `EfficientNMS_TRT` plugin graph). **Not** available on the eager `torch` runtime (no graph) or `torchscript` (backbone isn't scriptable). Raw export remains the default.
+
+---
+
+## Misc
 
 ### Composing face → emotion (no combined package)
 
@@ -288,20 +322,6 @@ face, emo = FaceClient(FACE_URL), EmotionClient(EMO_URL)
 r = face(frame)
 emotions = emo.predict_on_crops(EmotionClient.crop_boxes(frame, r.boxes))
 ```
-
-### Faster inference: bake decode + NMS into the graph (`postprocess="graph"`)
-
-RetinaFace post-processing (prior decode + NMS) costs about as much as inference itself. With an exported runtime you can fold it into the graph so it runs in the engine, not Python — detections are identical to the raw path:
-
-```python
-det = FaceDetector("retinaface", runtime="onnx", postprocess="graph", conf=0.5, nms=0.4)
-# or:  online-face-serve --runtime onnx --postprocess graph
-```
-Notes: `conf`/`nms`/`max_faces` are **baked at export time** (changing them re-exports); the artifact is **fixed to one input size**. **`onnx` is verified.** **`trt` is experimental/unverified** — it parses the ONNX NonMaxSuppression graph, which TRT support varies for; validate on your GPU (for production, prefer raw export or an `EfficientNMS_TRT` plugin graph). **Not** available on the eager `torch` runtime (no graph) or `torchscript` (backbone isn't scriptable). Raw export remains the default.
-
----
-
-## Misc
 
 ### Install with uv
 
