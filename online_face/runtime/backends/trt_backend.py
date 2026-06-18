@@ -45,10 +45,17 @@ class TensorRTBackend(Backend):
     def _torch_dtype(self, name):
         import torch
 
+        DT = self._trt.DataType
         dt = self.engine.get_tensor_dtype(name)
-        return {self._trt.DataType.HALF: torch.float16,
-                self._trt.DataType.FLOAT: torch.float32,
-                self._trt.DataType.INT32: torch.int32}.get(dt, torch.float32)
+        m = {DT.HALF: torch.float16, DT.FLOAT: torch.float32, DT.INT32: torch.int32}
+        # The postprocess-in-graph export emits `num_detections` as INT64; TRT 10 keeps it as an
+        # Int64 binding (hence the "Make sure output num_detections has Int64 binding" warning).
+        # Without this entry it falls through to float32, so the 8-byte int is read as a float32
+        # denormal (~0) and every frame's count rounds to 0 -> empty boxes. Guard for older TRT.
+        for attr, tdt in (("INT64", torch.int64), ("BOOL", torch.bool), ("INT8", torch.int8)):
+            if hasattr(DT, attr):
+                m[getattr(DT, attr)] = tdt
+        return m.get(dt, torch.float32)
 
     def infer(self, x):
         import torch
