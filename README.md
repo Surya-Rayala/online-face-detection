@@ -192,12 +192,18 @@ online-face-serve --model retinaface --device auto --runtime auto --host 127.0.0
 
 **Server flags** (all optional; defaults shown): `--model retinaface` ·
 `--weights KEY|PATH` (default: family default) · `--device {auto,cpu,cuda,mps}` ·
-`--runtime {auto,torch,torchscript,onnx,trt}` · `--precision {auto,fp32,fp16,int8}` ·
+`--instances 1` · `--runtime {auto,torch,torchscript,onnx,trt}` · `--precision {auto,fp32,fp16,int8}` ·
 `--conf 0.5` · `--nms 0.4` · `--input-size N` · `--host 127.0.0.1` · `--port 8001`.
+
+`--instances` runs a pool of N detectors so concurrent requests overlap (each runs in a worker
+thread). Pass a number (`--instances 4`) or a per-GPU map (`--instances cuda:0=2,cuda:1=1`) to pin
+instances to specific GPUs. On a **single** device the N copies just time-share it (N× memory for
+little gain) — multi-instance mainly helps across **multiple GPUs**; the threadpool overlap helps
+regardless. `/meta` reports the resolved `instances` and `instance_devices`.
 
 | Route | What it does |
 |-------|--------------|
-| `GET /meta` | self-describing: named, typed inputs/outputs (input `frame: image`; outputs `boxes/scores/landmarks`) |
+| `GET /meta` | self-describing: named, typed inputs/outputs (input `frame: image`; outputs `boxes/scores/landmarks`); plus `instances`/`instance_devices` |
 | `GET /healthz` | readiness + resolved runtime/device |
 | `POST /predict` | multipart with a `frame` image part → JSON `{outputs, stats}` (send `Accept: application/x-npz` for a binary array response) |
 | `WS /stream` | persistent socket: one binary frame per message → one JSON reply; pipelined, no per-request multipart parsing |
